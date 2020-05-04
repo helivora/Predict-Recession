@@ -1,0 +1,346 @@
+---
+title: "Predict Recession"
+author: ""
+date: "April 27, 2019"
+output: word_document
+---
+
+##Section 1:
+This section of the code focuses on the data loading, preparation and transformation. Here we use an HP filter to seperate our GDP into cycle and trends to define our recession for further analysis.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Downloading the necessary libraries:
+
+```{r libs}
+library('Quandl')
+library('lubridate')
+Quandl.api_key("UMo9bYuaDpyAy55mMfGS")
+
+```
+
+Loading all the data from FRED. For our model we have downloaded the following datasets from FRED:
+
+```{r dataload}
+
+#Rcessions defined by NBER  
+NBER = Quandl("FRED/USRECQM",type="xts")
+#Dates of U.S. recessions as inferred by GDP-based recession indicator
+GBR = Quandl("FRED/JHDUSRGDPBR",type="xts")
+
+GDP=Quandl("FRED/GDP",type="xts")
+#YTM for 30-year,10-year,5-year,6-month,3-month,1-month
+YTM=Quandl(c("FRED/DGS30","FRED/GS10","FRED/DGS5","FRED/DGS6MO","FRED/DGS3MO","FRED/DGS1MO"), collapse="quarterly",type="xts")
+
+#api_key <- "0ca67364d49868fac4c3db4702ddfee2"
+#fredr_set_key(api_key)
+#test_ytm <- fredr_series_observations(series_id = 'DGS30',frequency = "q")
+
+RealExpenditure= Quandl('FRED/DPCERL1Q225SBEA',type="xts")
+
+M1=Quandl("FRED/MYAGM1USM052N", collapse="quarterly",type="xts")
+M1g=diff(M1)/lag(M1,-1)*100
+M2=Quandl("FRED/MYAGM2USM052N", collapse="quarterly",type="xts")
+M2g=diff(M2)/lag(M2,-1)*100
+
+#Moody's Seasoned Aaa Corporate Bond Yield Relative to Yield on 10-Year Treasury Constant Maturity
+CorporateSpread=Quandl("FRED/AAA10YM", collapse="quarterly",type="xts")
+```
+
+We are only considering a subset of data i.e. from years 1982 to 2015 because that is when the data is present for all series in our analysis
+
+```{r data prep}
+
+
+
+GDP_subset = GDP["1982-01/2015"]
+NBER_subset=NBER["1982-01/2015"]
+GBR_subset=GBR["1982-01/2015"]
+CorpS_subset = CorporateSpread["1982-01/2015"]
+YTM_subset = YTM["1982-01/2015"]
+Realexp_subset = RealExpenditure["1982-01/2015"]
+M1_subset = M1g["1982-01/2015"]
+M2_subset = M2g["1982-01/2015"]
+M_subset = M2_subset-M1_subset
+
+
+
+```
+
+Using HP Filter to seperate GDP into cycle and trend:
+```{r hp filter1}
+
+source("Term_paper_functions.R")
+#load("Term_paper_functions.R")
+filter_hp = hpfilter(GDP_subset, type = "lambda",drift = FALSE)
+
+gdp_trend = filter_hp$trend
+gdp_cycle = filter_hp$cycle
+
+```
+
+Defining our recession based on the cycle seperated using HP filter.
+
+```{r recession}
+
+
+##Calculate recession based on mean and variance
+mean_Ct = mean(gdp_cycle)
+sd_ct = sqrt(var(gdp_cycle))
+
+test_no = mean_Ct - (0.9*sd_ct)
+dates2 <- seq(as.Date("1970-01-01"),length=184,by="quarter")
+test_no_1 <- xts(x=rep(test_no,184), order.by=dates2)
+##Doing this next line to create a variable of zeroes with dates of gdp cycle - just a shortcut for creating an xts obj of specified dates
+gdp_prob = gdp_cycle - gdp_cycle
+
+gdp_test = gdp_prob
+
+n = length(gdp_cycle)
+
+for (i in 1:n) {
+  gdp_test[i] = gdp_prob[i]+test_no
+  if(gdp_cycle[i]<gdp_test[i]){
+    gdp_prob[i] = 1
+  }
+}
+
+```
+
+
+```{r compare our gdp to nber}
+
+
+gdp_prob_ts = ts(gdp_prob, start = c(1982,1),frequency = 4)
+NBER_subset_ts = ts(NBER_subset, start = c(1982,1),frequency = 4) 
+GBR_subset_ts = ts(GBR_subset, start = c(1982,1),frequency = 4)
+
+plot(gdp_prob_ts,col="green")
+lines(NBER_subset_ts,col="red")
+legend(100,0.7, legend=c("Recession based on H-P", "Recession based on NBER"),
+       col=c("red", "blue"), lty=1:2, cex=0.8)
+lines(GBR_subset_ts,col="blue")
+
+```
+
+##Section 2- Variable selection and Evaluation
+
+This section focuses on the analysis that help us determine the lags for different variables that our model is based on
+
+
+
+```{r lag analysis 1}
+CorpS_subset_lag4 = lag.xts(CorpS_subset,4)
+Realexp_subset_lag4 = lag.xts(Realexp_subset,4)
+M_subset_lag4 = lag.xts(M_subset,4)
+
+##Model for ytm (10 - 6)
+library(brglm)
+
+YTM_spread_1 = YTM_subset$FRED.GS10 - YTM_subset$FRED.DGS6MO
+YTM_spread_1_lag = lag.xts(YTM_spread_1,4)
+
+#m1<-brglm(gdp_prob ~ CorpS_subset_lag + Realexp_subset_lag + M_subset_lag + YTM_spread_1_lag, family=quasibinomial)
+#summary(m1)
+myprobit1 <- glm(gdp_prob ~ CorpS_subset_lag4 + Realexp_subset_lag4 + M_subset_lag4 + YTM_spread_1_lag, family = quasibinomial)
+
+## model summary
+summary(myprobit1)
+
+##Model for ytm (10 - 3)
+YTM_spread_2 = YTM_subset$FRED.GS10 - YTM_subset$FRED.DGS3MO
+YTM_spread_2_lag = lag.xts(YTM_spread_2,4)
+
+myprobit2 <- glm(gdp_prob ~ CorpS_subset_lag4 + Realexp_subset_lag4 + M_subset_lag4 + YTM_spread_2_lag, family = quasibinomial)
+
+## model summary
+summary(myprobit2)
+
+
+##Model for ytm (5 - 6)
+YTM_spread_3 = YTM_subset$FRED.DGS5 - YTM_subset$FRED.DGS6MO
+YTM_spread_3_lag = lag.xts(YTM_spread_3,4)
+
+myprobit3 <- glm(gdp_prob ~ CorpS_subset_lag4 + Realexp_subset_lag4 + M_subset_lag4 + YTM_spread_3_lag, family = quasibinomial)
+
+## model summary
+summary(myprobit3)
+
+##Model for ytm (5 - 3)
+YTM_spread_4 = YTM_subset$FRED.DGS5 - YTM_subset$FRED.DGS3MO
+YTM_spread_4_lag = lag.xts(YTM_spread_4,4)
+
+myprobit4 <- glm(gdp_prob ~ CorpS_subset_lag4 + Realexp_subset_lag4 + M_subset_lag4 + YTM_spread_4_lag, family = quasibinomial)
+
+## model summary
+summary(myprobit4)
+
+```
+
+```{r average ytm analysis}
+YTM_spread_avg= (YTM_spread_1+YTM_spread_2+YTM_spread_3+YTM_spread_4)/4
+
+
+compare1 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,1)+lag.xts(Realexp_subset,1)+lag.xts(M_subset,1)+lag.xts(CorpS_subset,1) , family = binomial)
+compare2 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,2)+lag.xts(Realexp_subset,2)+lag.xts(M_subset,2)+lag.xts(CorpS_subset,2) , family = binomial)
+compare3 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,3)+lag.xts(Realexp_subset,3)+lag.xts(M_subset,3)+lag.xts(CorpS_subset,3) , family = binomial)
+compare4 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,4)+lag.xts(Realexp_subset,4)+lag.xts(M_subset,4)+lag.xts(CorpS_subset,4) , family = binomial)
+compare5 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,5)+lag.xts(Realexp_subset,5)+lag.xts(M_subset,5)+lag.xts(CorpS_subset,5) , family = binomial)
+compare6 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,6)+lag.xts(Realexp_subset,6)+lag.xts(M_subset,6)+lag.xts(CorpS_subset,6) , family = binomial)
+compare7 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,7)+lag.xts(Realexp_subset,7)+lag.xts(M_subset,7)+lag.xts(CorpS_subset,7) , family = binomial)
+compare8 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,8)+lag.xts(Realexp_subset,8)+lag.xts(M_subset,8)+lag.xts(CorpS_subset,8) , family = binomial)
+compare9 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,9)+lag.xts(Realexp_subset,9)+lag.xts(M_subset,9)+lag.xts(CorpS_subset,9) , family = binomial)
+compare10 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,10)+lag.xts(Realexp_subset,10)+lag.xts(M_subset,10)+lag.xts(CorpS_subset,10) , family = binomial)
+compare11 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,11)+lag.xts(Realexp_subset,11)+lag.xts(M_subset,11)+lag.xts(CorpS_subset,11) , family = binomial)
+compare12 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,12)+lag.xts(Realexp_subset,12)+lag.xts(M_subset,12)+lag.xts(CorpS_subset,12) , family = binomial)
+
+
+compare7 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,7)+lag.xts(CorpS_subset,7) , family = binomial)
+compare8 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,8)+lag.xts(CorpS_subset,8) , family = binomial)
+compare9 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,9)+lag.xts(CorpS_subset,9) , family = binomial)
+compare10 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,10)+lag.xts(CorpS_subset,10) , family = binomial)
+compare11 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,11)+lag.xts(CorpS_subset,11) , family = binomial)
+compare12 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,12)+lag.xts(CorpS_subset,12) , family = binomial)
+
+
+compare13 <- glm(gdp_prob ~ lag.xts(YTM_spread_avg,11)+lag.xts(Realexp_subset,7)+lag.xts(M_subset,8)+lag.xts(CorpS_subset,7) , family = binomial)
+summary(compare13)
+
+
+library(stargazer)
+stargazer(compare1,compare2,compare3,compare4,compare5,compare6,compare7,compare8,compare9,compare10,compare11,compare12,type="html", dep.var.labels=c("Recession Possibility"),covariate.labels=c("Avrage Spread","Real Expenditure","M2-M1","Corporate Bond"),out="compare1.html")
+
+```
+
+##Section 3 - Model Building and Evaluation
+
+The above analysis helped us evaluate the variables and what lags we should choose in each situation. Now we will build classification models based on those variables to predict whether recession will occur or not and if yes, what is the probability of recession.
+
+
+In the below snippet, we create training and test dataset for our model building and validation
+```{r model building}
+
+##Create lags
+CorpS_subset_lag = lag.xts(CorpS_subset,7)
+Realexp_subset_lag = lag.xts(Realexp_subset,7)
+M_subset_lag = lag.xts(M_subset,8)
+YTM_spread_avg_lag = lag.xts(YTM_spread_avg,11)
+
+###Creating test-train data
+dataset1 = merge(CorpS_subset_lag,Realexp_subset_lag,M_subset_lag,YTM_spread_avg_lag,gdp_prob)
+names(dataset1) <- c("x1","x2","x3","x4","x5")
+dataset1 = dataset1["1984-01/"]
+train_dataset = dataset1["1984-01/2009"]
+#change the date when lag changes#
+test_dataset = dataset1["2010/2015"]
+
+X_train = as.data.frame(train_dataset[,1:4])
+Y_train = as.data.frame(train_dataset[,5])
+X_test = as.data.frame(test_dataset[,1:4])
+Y_test = as.data.frame(test_dataset[,5])
+
+```
+
+###Model 1 - Logistic Regression
+
+```{r logit model}
+
+##Training the data
+logistic_classifier = glm(x5~x1+x2+x3+x4,
+                          data = train_dataset[,1:5],
+                          family = binomial)
+
+# Making the Confusion Matrix for Training Accuracy
+cm = table(train_dataset[,5], y_pred > 0.85)
+cm
+
+accuracy = ((cm[1,1]+cm[2,2])/(cm[1,1]+cm[1,2]+cm[2,2]+cm[2,1]))
+accuracy
+
+```
+
+```{r testing the logit model}
+
+
+# Predicting the Test set results
+prob_pred = predict.glm(logistic_classifier, type = 'response', newdata = train_dataset[, 1:4])
+y_pred = ifelse(prob_pred > 0.85, 1, 0)
+
+
+###Accuracy on Test Set
+# Predicting the Test set results
+prob_pred_log = predict.glm(logistic_classifier, type = 'response', newdata = test_dataset[, 1:4])
+y_pred_log = ifelse(prob_pred_log > 0.85, 1, 0)
+
+# Making the Confusion Matrix
+cm_log = table(test_dataset[,5], y_pred_log)
+cm_log
+
+accuracy = ((cm_log[1,1]+cm_log[2,2])/sum(cm_log))
+accuracy
+
+```
+
+###Model 2 - Support Vector Machine Model
+
+Here we are using a grid search algorithm to determine the best tuning parameters for our SVM model
+
+```{r svm grid 1}
+
+library(caret)
+classifier_gs = train(form = x5 ~ ., data = train_dataset["1985-01/2009"], method = 'svmPoly')
+classifier_gs
+classifier_gs$bestTune
+
+```
+
+Training model on training set
+```{r svm train}
+
+library(e1071)
+classifier_svm = svm(Y_train$x5~x4+x3+x2+x1,
+                     data = X_train,
+                     type = 'C-classification',
+                     kernel = 'polynomial',
+                     degree = 2,
+                     gamma = 0.53,
+                     probability = TRUE)
+
+```
+
+Training Set Accuracy
+```{r svm train}
+# Predicting the Test set results
+
+y_pred_1 = predict(classifier_svm,train_dataset[,1:4])
+
+
+# Making the Confusion Matrix
+x = train_dataset$x5
+x1 = x["1984-10/2009"]
+check=as.data.frame(y_pred_1)
+
+cm_svm = table(x1,y_pred_1)
+
+cm_svm
+
+accuracy_svm = ((cm_svm[1,1]+cm_svm[2,2])/sum(cm_svm))
+accuracy_svm
+```
+
+Test Set Accuracy
+```{r svm test}
+
+y_pred_1 = predict(classifier_svm,X_test[,1:4])
+
+# Making the Confusion Matrix
+cm_svm = table(Y_test$x, y_pred_1)
+
+cm_svm
+
+accuracy_svm = ((cm_svm[1,1]+cm_svm[2,2])/sum(cm_svm))
+accuracy_svm
+```
+
